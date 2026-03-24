@@ -478,16 +478,21 @@ except:
 # SCSI passthrough
 
 scsi_hba = {}
+mpathadm = '/usr/sbin/mpathadm' if os.path.isfile('/usr/sbin/mpathadm') else '/usr/bin/true'
 for i, v in z.build_devlist('scsi', 8):
     if (vv := z.findattr(f'scsi{i}')) is not None:
+        skip_lun_cfg = False
         backend_opts = [x.strip() for x in vv.get('value').split(',')]
         if len(backend_opts) > 1:
             for o in backend_opts[1:]:
                 (k,v) = o.split('=')
+                if k == 'skip_lun_cfg' and boolv(str(v).lower(), k, ignore=True) is True:
+                    skip_lun_cfg = True
         scsi_hba[f'scsi{i}'] = {
             'id': i,
             'device': 'virtio-scsi',
             'backend': backend_opts[0],
+            'skip_lun_cfg': skip_lun_cfg,
             'targets': [],
         }
 
@@ -525,6 +530,13 @@ for i, v in z.build_devlist('disk', 99):
 
 for v in scsi_hba.values():
     if len(v['targets']):
+        if v['skip_lun_cfg'] is False:
+            for dsk in v['targets']:
+                p = subprocess.run([mpathadm, 'modify', 'lu', '-b', 'none', dsk],
+                                   capture_output=True, text=True)
+                if p.returncode > 0:
+                    warning(f'Could not disabled load balancing for {dsk}: {p.stderr}')
+
         args.extend([
             '-s', '{0}:{1},{2},{3},{4}'.format(SCSI_SLOT, v['id'], v['device'],
             v['backend'],','.join(list(map(lambda x: 'target=' + x , v['targets']))))
